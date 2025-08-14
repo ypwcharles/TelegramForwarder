@@ -102,7 +102,6 @@ class ForwardRule(Base):
     rss_config = relationship('RSSConfig', uselist=False, back_populates='rule', cascade="all, delete-orphan")
     rule_syncs = relationship('RuleSync', back_populates='rule', cascade="all, delete-orphan")
     push_config = relationship('PushConfig', uselist=False, back_populates='rule', cascade="all, delete-orphan")
-    web_scrape_configs = relationship('WebScrapeConfig', back_populates='forward_rule', cascade="all, delete-orphan")
 
 class Keyword(Base):
     __tablename__ = 'keywords'
@@ -252,12 +251,13 @@ class WebScrapeConfig(Base):
     task_name = Column(String, nullable=False)
     coin_names = Column(String, nullable=False)
     schedule = Column(String, nullable=False, default='0 */1 * * *')
-    forward_rule_id = Column(Integer, ForeignKey('forward_rules.id'), nullable=False)
+    target_channel_id = Column(String, nullable=True)
+    ai_model = Column(String, nullable=True)
+    summary_prompt = Column(String, nullable=True)
     is_enabled = Column(Boolean, default=True, nullable=False)
     last_run_at = Column(DateTime, nullable=True)
 
     user = relationship('User')
-    forward_rule = relationship('ForwardRule', back_populates='web_scrape_configs')
     processed_posts = relationship('ProcessedPost', back_populates='scrape_config', cascade="all, delete-orphan")
 
     __table_args__ = (

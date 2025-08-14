@@ -2,88 +2,98 @@ import logging
 import asyncio
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
-from models.models import get_session, WebScrapeConfig, ProcessedPost, ForwardRule
-from crawler.web_scraper import scrape_posts
-from filters.process import process_forward_rule
-from utils.common import SyntheticEvent, get_bot_client
+from models.models import get_session, WebScrapeConfig, ProcessedPost
+from crawler.web_scraper import scrape_page
+from ai import get_ai_provider
+from utils.common import get_bot_client
 from datetime import datetime
+from playwright.async_api import async_playwright
 
 logger = logging.getLogger(__name__)
 URL_TEMPLATE = "https://coinmarketcap.com/community/coins/{coin_name}/latest/"
 
 async def execute_scrape_task(task_id: int, bot_client):
-    """执行单个抓取任务，并将内容注入到关联的转发规则中进行处理。"""
+    """执行单个抓取、总结和发送任务"""
     logger.info(f"开始执行网页抓取任务 ID: {task_id}")
     session = get_session()
+    task = None
     try:
         task = session.query(WebScrapeConfig).get(task_id)
-        if not (task and task.is_enabled and task.forward_rule_id):
-            logger.warning(f"任务 {task_id} 不存在、已禁用或未关联转发规则，跳过执行。")
-            if bot_client and task:
-                await bot_client.send_message(task.user_id, f"网页抓取任务 '{task.task_name}' (ID: {task_id}) 因未启用或未关联规则而跳过执行。")
+        if not (task and task.is_enabled and task.target_channel_id):
+            logger.warning(f"任务 {task_id} 不存在、已禁用或未设置目标频道，跳过执行。")
             return
 
-        rule = session.query(ForwardRule).get(task.forward_rule_id)
-        if not rule:
-            logger.error(f"任务 {task_id} 关联的转发规则 {task.forward_rule_id} 不存在。")
-            await bot_client.send_message(task.user_id, f"网页抓取任务 '{task.task_name}' (ID: {task_id}) 关联的转发规则不存在，执行失败。")
-            return
-
+        all_new_posts = []
         posts_by_coin = {}
-        all_new_posts_flat = []
         coin_names = [name.strip() for name in task.coin_names.split(',')]
 
-        for coin in coin_names:
-            url = URL_TEMPLATE.format(coin_name=coin)
-            scraped_posts = await scrape_posts(url, time_limit_hours=24)
-            
-            if not scraped_posts:
-                continue
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True)
+            page = await browser.new_page()
 
-            seen_post_ids = {p.post_unique_id for p in task.processed_posts}
-            new_posts = [p for p in scraped_posts if p['unique_id'] not in seen_post_ids]
+            for coin in coin_names:
+                url = URL_TEMPLATE.format(coin_name=coin)
+                try:
+                    scraped_posts = await scrape_page(page, url, time_limit_hours=24)
+                    if new_posts := [p for p in scraped_posts if p['unique_id'] not in {post.post_unique_id for post in task.processed_posts}]:
+                        logger.info(f"任务 {task.id} 在 {coin} 页面发现 {len(new_posts)} 个新帖子。")
+                        posts_by_coin[coin] = new_posts
+                        all_new_posts.extend(new_posts)
+                except Exception as e:
+                    logger.error(f"抓取币种 {coin} (URL: {url}) 时出错: {e}")
+                    continue # 继续下一个币种
             
-            if new_posts:
-                logger.info(f"任务 {task.id} 在 {coin} 页面发现 {len(new_posts)} 个新帖子。")
-                posts_by_coin[coin] = new_posts
-                all_new_posts_flat.extend(new_posts)
-            else:
-                logger.info(f"任务 {task.id} 在 {coin} 页面没有发现新帖子。")
+            await browser.close()
 
         if posts_by_coin:
-            # 构建带有币种分类的文本内容
             content_for_ai = ""
             for coin, posts in posts_by_coin.items():
                 content_for_ai += f"[COIN: {coin}]\n"
-                for post in posts:
-                    # 移除作者信息，只保留核心内容
-                    core_content = post['content'].split(':', 1)[-1].strip()
-                    content_for_ai += f"- {core_content}\n"
-                content_for_ai += "---\n"
-            
-            logger.info(f"任务 {task.id}: 准备将 {len(all_new_posts_flat)} 个新帖子的内容注入规则 {rule.id} 进行处理。")
-            synthetic_event = SyntheticEvent(text=content_for_ai, client=bot_client)
-            
-            await process_forward_rule(bot_client, synthetic_event, str(rule.source_chat_id), rule)
+                core_contents = [p['content'].split(':', 1)[-1].strip() for p in posts]
+                content_for_ai += "\n".join([f"- {c}" for c in core_contents])
+                content_for_ai += "\n---\n"
 
-            for post in all_new_posts_flat:
+            summary = ""
+            try:
+                if not task.ai_model or not task.summary_prompt:
+                    raise ValueError("任务未配置AI模型或总结提示词。" )
+                
+                logger.info(f"任务 {task.id}: 准备进行AI总结。模型: {task.ai_model}")
+                provider = await get_ai_provider(task.ai_model)
+                prompt = task.summary_prompt
+                summary = await provider.process_message(message=content_for_ai, prompt=prompt, model=task.ai_model)
+                logger.info(f"任务 {task.id}: AI总结完成。")
+
+            except Exception as e:
+                logger.error(f"任务 {task.id}: AI总结过程中出错: {e}")
+                summary = f"【AI总结失败】\n任务 '{task.task_name}' 发现 {len(all_new_posts)} 条新动态，但在总结时出错。\n错误: {e}"
+            
+            try:
+                target_chat_id = int(task.target_channel_id)
+                logger.info(f"任务 {task.id}: 准备将总结发送到频道 {target_chat_id}")
+                await bot_client.send_message(target_chat_id, summary, parse_mode='markdown', link_preview=False)
+                logger.info(f"任务 {task.id}: 已成功将总结发送到 {target_chat_id}")
+            except Exception as e:
+                logger.error(f"任务 {task.id}: 发送消息到频道 {target_chat_id} 时出错: {e}")
+
+            for post in all_new_posts:
                 processed = ProcessedPost(scrape_config_id=task.id, post_unique_id=post['unique_id'])
                 session.add(processed)
             
             task.last_run_at = datetime.now()
             session.commit()
-            logger.info(f"任务 {task.id}: 已将 {len(all_new_posts_flat)} 个新帖子标记为已处理。")
-            await bot_client.send_message(task.user_id, f"网页抓取任务 '{task.task_name}' 执行完毕，处理了 {len(all_new_posts_flat)} 条新内容。")
+            logger.info(f"任务 {task.id}: 已将 {len(all_new_posts)} 个新帖子标记为已处理。")
         else:
-            await bot_client.send_message(task.user_id, f"网页抓取任务 '{task.task_name}' 执行完毕，未发现新内容。")
+            logger.info(f"任务 {task.id}: 执行完毕，未发现新内容。")
 
     except Exception as e:
         logger.error(f"执行抓取任务 {task_id} 时出错: {e}")
         logger.exception(e)
-        if task:
+        if task and bot_client:
             await bot_client.send_message(task.user_id, f"网页抓取任务 '{task.task_name}' (ID: {task_id}) 执行失败，请检查日志。")
     finally:
-        session.close()
+        if session.is_active:
+            session.close()
 
 class WebScrapeScheduler:
     def __init__(self, bot_client):
@@ -113,10 +123,10 @@ class WebScrapeScheduler:
         
         if not self.scheduler.running:
             self.scheduler.start()
-            logger.info("网页抓取调度器已启动。")
+            logger.info("网页抓取调度器已启动。" )
 
     def stop(self):
         """停止调度器"""
         if self.scheduler.running:
             self.scheduler.shutdown()
-            logger.info("网页抓取调度器已停止。")
+            logger.info("网页抓取调度器已停止。" )
