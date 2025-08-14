@@ -2253,11 +2253,16 @@ async def handle_delete_rss_user_command(event, command, parts):
 
 async def handle_webscrape_command(event):
     """处理 webscrape 命令"""
+    logger.info("开始处理 /webscrape 命令...")
     try:
         user_id = event.sender_id
+        logger.info(f"用户ID: {user_id}，正在生成文本...")
         text = await create_webscrape_text(user_id)
+        logger.info("文本生成完毕，正在生成按钮...")
         buttons = await create_webscrape_buttons(user_id)
+        logger.info("按钮生成完毕，准备发送响应...")
         await event.respond(text, buttons=buttons, parse_mode='markdown')
+        logger.info("响应已成功发送。")
     except Exception as e:
-        logger.error(f"处理 /webscrape 命令时出错: {e}")
+        logger.error(f"处理 /webscrape 命令时出错: {e}", exc_info=True)
         await event.respond("获取网页抓取任务列表时出错，请查看日志。")

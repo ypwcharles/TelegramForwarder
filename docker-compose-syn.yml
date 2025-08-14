@@ -1,7 +1,7 @@
 services:
   telegram-forwarder:
     # 使用您自己的、已推送到 Docker Hub 的镜像
-    image: charlesyang10107/bstanewsforwarder:v1.0-amd64
+    image: charlesyang10107/bstanewsforwarder:v2.1.0
     
     # 您可以为在群晖上运行的容器起一个新名字
     container_name: my-synology-forwarder

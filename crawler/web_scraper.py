@@ -31,14 +31,6 @@ def parse_relative_time(time_str: str) -> datetime:
 async def scrape_page(page: Page, url: str, time_limit_hours: int = 24) -> list[dict[str, str]]:
     """
     使用一个已有的 Playwright Page 对象来抓取单个 URL。
-
-    Args:
-        page: 一个已经创建的 Playwright Page 对象。
-        url: 要抓取的页面的 URL。
-        time_limit_hours: 只抓取最近多少小时内的帖子。
-
-    Returns:
-        一个包含帖子信息的字典列表。
     """
     logger.info(f"开始使用页面对象抓取 URL: {url}")
     

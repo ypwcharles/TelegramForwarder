@@ -1,5 +1,7 @@
 import logging
 import asyncio
+import random
+import string
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from models.models import get_session, WebScrapeConfig, ProcessedPost
@@ -29,10 +31,17 @@ async def execute_scrape_task(task_id: int, bot_client):
 
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True)
-            page = await browser.new_page()
+            # 设置统一的 User-Agent
+            user_agent = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36'
+            context = await browser.new_context(user_agent=user_agent)
+            page = await context.new_page()
 
             for coin in coin_names:
-                url = URL_TEMPLATE.format(coin_name=coin)
+                base_url = URL_TEMPLATE.format(coin_name=coin)
+                random_param = ''.join(random.choices(string.ascii_lowercase, k=5))
+                random_value = ''.join(random.choices(string.ascii_lowercase + string.digits, k=10))
+                url = f"{base_url}?{random_param}={random_value}"
+                
                 try:
                     scraped_posts = await scrape_page(page, url, time_limit_hours=24)
                     if new_posts := [p for p in scraped_posts if p['unique_id'] not in {post.post_unique_id for post in task.processed_posts}]:
@@ -41,7 +50,7 @@ async def execute_scrape_task(task_id: int, bot_client):
                         all_new_posts.extend(new_posts)
                 except Exception as e:
                     logger.error(f"抓取币种 {coin} (URL: {url}) 时出错: {e}")
-                    continue # 继续下一个币种
+                    continue
             
             await browser.close()
 
