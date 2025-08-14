@@ -1,10 +1,20 @@
 import asyncio
-from playwright.async_api import Page
+from playwright.async_api import Page, Route
 import logging
 import re
 from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)
+
+# 资源类型黑名单
+RESOURCE_EXCLUSIONS = ["image", "stylesheet", "font"]
+
+async def intercept_route(route: Route):
+    """拦截并中止不需要的网络请求"""
+    if route.request.resource_type in RESOURCE_EXCLUSIONS:
+        await route.abort()
+    else:
+        await route.continue_()
 
 def parse_relative_time(time_str: str) -> datetime:
     """
@@ -34,6 +44,9 @@ async def scrape_page(page: Page, url: str, time_limit_hours: int = 24) -> list[
     """
     logger.info(f"开始使用页面对象抓取 URL: {url}")
     
+    # 启用请求拦截
+    await page.route("**/*", intercept_route)
+
     POST_SELECTOR = "div[data-test=\"community-post\"]"
     AUTHOR_NAME_SELECTOR = "span[data-test=\"post-username\"]"
     CONTENT_SELECTOR = "div.text"
@@ -44,7 +57,8 @@ async def scrape_page(page: Page, url: str, time_limit_hours: int = 24) -> list[
     processed_post_ids = set()
     time_limit_reached = False
 
-    await page.goto(url, wait_until="networkidle", timeout=60000)
+    await page.goto(url, wait_until="networkidle", timeout=90000)
+    await page.wait_for_selector(POST_SELECTOR, timeout=30000)
 
     try:
         cookie_button = page.get_by_role("button", name=re.compile("Accept|Allow all"))
@@ -110,4 +124,6 @@ async def scrape_page(page: Page, url: str, time_limit_hours: int = 24) -> list[
         await page.wait_for_timeout(2000)
 
     logger.info(f"抓取完成。在 {url} 找到 {len(scraped_posts)} 个帖子。")
+    # 禁用请求拦截
+    await page.unroute("**/*", intercept_route)
     return scraped_posts
