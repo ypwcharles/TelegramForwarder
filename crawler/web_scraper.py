@@ -1,0 +1,133 @@
+import asyncio
+from playwright.async_api import async_playwright
+import logging
+import re
+from datetime import datetime, timedelta
+
+logger = logging.getLogger(__name__)
+
+def parse_relative_time(time_str: str) -> datetime:
+    """
+    将 "5m", "2h", "3d" 这样的相对时间字符串转换为绝对的 datetime 对象。
+    """
+    now = datetime.now()
+    time_str = time_str.lower().strip().replace("·", "").strip()
+
+    if any(x in time_str for x in ["now", "just now", "seconds"]):
+        return now
+    
+    if "minute" in time_str:
+        value = int(re.search(r'(\d+)', time_str).group(1))
+        return now - timedelta(minutes=value)
+    if "hour" in time_str:
+        value = int(re.search(r'(\d+)', time_str).group(1))
+        return now - timedelta(hours=value)
+    if "day" in time_str:
+        value = int(re.search(r'(\d+)', time_str).group(1))
+        return now - timedelta(days=value)
+
+    # 如果格式不匹配（例如 "August 10"），则返回一个较早的日期以用于比较
+    return now - timedelta(days=365)
+
+async def scrape_posts(url: str, time_limit_hours: int = 24) -> list[dict[str, str]]:
+    """
+    通用的 Playwright 爬虫函数，用于抓取 CoinMarketCap Community 这类包含帖子的页面。
+
+    Args:
+        url: 要抓取的页面的 URL。
+        time_limit_hours: 只抓取最近多少小时内的帖子。
+
+    Returns:
+        一个包含帖子信息的字典列表，每个字典包含 'unique_id' 和 'content'。
+    """
+    logger.info(f"开始抓取 URL: {url}")
+    
+    # --- CSS 选择器 (未来可作为参数传入) ---
+    POST_SELECTOR = "div[data-test=\"community-post\"]"
+    AUTHOR_NAME_SELECTOR = "span[data-test=\"post-username\"]"
+    CONTENT_SELECTOR = "div.text"
+    TIMESTAMP_SELECTOR = "span.tooltip"
+    READ_MORE_SELECTOR = "Read all"
+
+    scraped_posts = []
+    processed_post_ids = set()
+    time_limit_reached = False
+
+    try:
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True)
+            page = await browser.new_page()
+            await page.goto(url, wait_until="networkidle", timeout=60000)
+
+            # 尝试接受 Cookie
+            try:
+                cookie_button = page.get_by_role("button", name=re.compile("Accept|Allow all"))
+                if await cookie_button.is_visible(timeout=5000):
+                    await cookie_button.click()
+                    await page.wait_for_timeout(1000)
+            except Exception:
+                logger.info("未找到Cookie按钮，或处理时出错。继续操作...")
+
+            for i in range(20): # 最多滚动20次
+                if time_limit_reached:
+                    break
+
+                posts_on_page = await page.query_selector_all(POST_SELECTOR)
+                if not posts_on_page and i == 0:
+                    logger.warning(f"在 {url} 找不到任何帖子，请检查 POST_SELECTOR 是否正确。")
+                    break
+
+                for post_element in posts_on_page:
+                    try:
+                        post_id = await post_element.get_attribute('data-post-id')
+                        if not post_id or post_id in processed_post_ids:
+                            continue
+
+                        timestamp_el = await post_element.query_selector(TIMESTAMP_SELECTOR)
+                        time_str = await timestamp_el.inner_text() if timestamp_el else ""
+                        post_time = parse_relative_time(time_str)
+
+                        if datetime.now() - post_time > timedelta(hours=time_limit_hours):
+                            time_limit_reached = True
+                            break
+
+                        # 点击 "Read all"
+                        try:
+                            read_more_button = post_element.get_by_text(READ_MORE_SELECTOR)
+                            if await read_more_button.is_visible(timeout=200):
+                                await read_more_button.click()
+                                await page.wait_for_timeout(200)
+                        except Exception:
+                            pass
+
+                        author_name_el = await post_element.query_selector(AUTHOR_NAME_SELECTOR)
+                        content_el = await post_element.query_selector(CONTENT_SELECTOR)
+
+                        author_name = await author_name_el.inner_text() if author_name_el else "N/A"
+                        content = await content_el.inner_text() if content_el else ""
+                        
+                        full_content = f"{author_name}: {content.strip()}"
+
+                        scraped_posts.append({
+                            'unique_id': post_id,
+                            'content': full_content
+                        })
+                        processed_post_ids.add(post_id)
+
+                    except Exception as e:
+                        logger.warning(f"处理单个帖子时出错: {e}")
+                        continue
+                
+                if time_limit_reached:
+                    break
+
+                await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                await page.wait_for_timeout(2000)
+
+            await browser.close()
+            logger.info(f"抓取完成。在 {url} 找到 {len(scraped_posts)} 个帖子。")
+
+    except Exception as e:
+        logger.error(f"抓取 {url} 时发生严重错误: {e}")
+    
+    return scraped_posts

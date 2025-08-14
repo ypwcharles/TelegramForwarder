@@ -1,0 +1,36 @@
+services:
+  telegram-forwarder:
+    # 使用您自己的、已推送到 Docker Hub 的镜像
+    image: charlesyang10107/bstanewsforwarder:v1.0-amd64
+    
+    # 您可以为在群晖上运行的容器起一个新名字
+    container_name: my-synology-forwarder
+    
+    # 始终在容器停止时重启，除非手动停止
+    restart: unless-stopped
+    
+    # 卷挂载，将群晖上的文件夹映射到容器内部
+    # 请确保在群晖的 /docker 共享文件夹下，已创建 my-synology-forwarder 文件夹
+    # 并在其中创建 db, logs, sessions, temp, ufb/config, config, rss/data, rss/media 这些子文件夹
+    volumes:
+      - ./db:/app/db
+      - ./.env:/app/.env
+      - ./logs:/app/logs
+      - ./sessions:/app/sessions
+      - ./temp:/app/temp
+      - ./ufb/config:/app/ufb/config
+      - ./config:/app/config
+      - ./rss/data:/app/rss/data
+      - ./rss/media:/app/rss/media
+      
+    # 日志配置
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+        compress: "true"
+        
+    # 后台运行模式，不需要交互式输入
+    stdin_open: false
+    tty: false
