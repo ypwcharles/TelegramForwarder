@@ -49,43 +49,57 @@ async def execute_scrape_task(task_id: int, bot_client):
             context = await browser.new_context(user_agent=user_agent)
             page = await context.new_page()
 
-            for coin in coin_names:
-                base_url = URL_TEMPLATE.format(coin_name=coin)
-                random_param = ''.join(random.choices(string.ascii_lowercase, k=5))
-                random_value = ''.join(random.choices(string.ascii_lowercase + string.digits, k=10))
-                url = f"{base_url}?{random_param}={random_value}"
-                
+            try:
+                for coin in coin_names:
+                    base_url = URL_TEMPLATE.format(coin_name=coin)
+                    random_param = ''.join(random.choices(string.ascii_lowercase, k=5))
+                    random_value = ''.join(random.choices(string.ascii_lowercase + string.digits, k=10))
+                    url = f"{base_url}?{random_param}={random_value}"
+
+                    try:
+                        scraped_posts = await scrape_page(page, url, time_limit_hours=24)
+
+                        # 检查是否有重复的帖子
+                        unique_ids_in_scrape = {p['unique_id'] for p in scraped_posts}
+                        if len(scraped_posts) != len(unique_ids_in_scrape):
+                            logger.warning(
+                                f"任务 {task.id} 在 {coin} 页面发现重复帖子，原始 {len(scraped_posts)} 个，去重后 {len(unique_ids_in_scrape)} 个"
+                            )
+
+                        # 筛选真正的新帖子（数据库中没有且本次任务未处理过）
+                        db_processed_ids = {post.post_unique_id for post in task.processed_posts}
+                        coin_new_posts = []
+
+                        for post in scraped_posts:
+                            unique_id = post['unique_id']
+                            if unique_id not in db_processed_ids and unique_id not in processed_unique_ids:
+                                coin_new_posts.append(post)
+                                all_new_posts.append(post)
+                                processed_unique_ids.add(unique_id)
+                                logger.debug(f"任务 {task.id}: 添加新帖子 {unique_id}")
+                            elif unique_id in processed_unique_ids:
+                                logger.debug(f"任务 {task.id}: 跳过本次任务已处理的帖子 {unique_id}")
+
+                        if coin_new_posts:
+                            logger.info(f"任务 {task.id} 在 {coin} 页面发现 {len(coin_new_posts)} 个新帖子。")
+                            posts_by_coin[coin] = coin_new_posts
+                    except Exception as e:
+                        logger.error(f"抓取币种 {coin} (URL: {url}) 时出错: {e}")
+                        continue
+            finally:
+                # 确保顺序关闭以避免残留子进程
                 try:
-                    scraped_posts = await scrape_page(page, url, time_limit_hours=24)
-                    
-                    # 检查是否有重复的帖子
-                    unique_ids_in_scrape = {p['unique_id'] for p in scraped_posts}
-                    if len(scraped_posts) != len(unique_ids_in_scrape):
-                        logger.warning(f"任务 {task.id} 在 {coin} 页面发现重复帖子，原始 {len(scraped_posts)} 个，去重后 {len(unique_ids_in_scrape)} 个")
-                    
-                    # 筛选真正的新帖子（数据库中没有且本次任务未处理过）
-                    db_processed_ids = {post.post_unique_id for post in task.processed_posts}
-                    coin_new_posts = []
-                    
-                    for post in scraped_posts:
-                        unique_id = post['unique_id']
-                        if unique_id not in db_processed_ids and unique_id not in processed_unique_ids:
-                            coin_new_posts.append(post)
-                            all_new_posts.append(post)
-                            processed_unique_ids.add(unique_id)
-                            logger.debug(f"任务 {task.id}: 添加新帖子 {unique_id}")
-                        elif unique_id in processed_unique_ids:
-                            logger.debug(f"任务 {task.id}: 跳过本次任务已处理的帖子 {unique_id}")
-                    
-                    if coin_new_posts:
-                        logger.info(f"任务 {task.id} 在 {coin} 页面发现 {len(coin_new_posts)} 个新帖子。")
-                        posts_by_coin[coin] = coin_new_posts
-                        
-                except Exception as e:
-                    logger.error(f"抓取币种 {coin} (URL: {url}) 时出错: {e}")
-                    continue
-            
-            await browser.close()
+                    await page.close()
+                except Exception:
+                    pass
+                try:
+                    await context.close()
+                except Exception:
+                    pass
+                try:
+                    await browser.close()
+                except Exception:
+                    pass
 
         if posts_by_coin:
             content_for_ai = ""
@@ -157,6 +171,7 @@ class WebScrapeScheduler:
                     id=f"scrape_task_{task.id}",
                     name=f"Scrape {task.task_name}",
                     misfire_grace_time=3600,
+                    max_instances=1,
                     replace_existing=True
                 )
                 logger.info(f"已为任务 '{task.task_name}' (ID: {task.id}) 添加调度，cron: {task.schedule}")
@@ -201,6 +216,7 @@ class WebScrapeScheduler:
                     id=job_id,
                     name=f"Scrape {task.task_name}",
                     misfire_grace_time=3600,
+                    max_instances=1,
                     replace_existing=True
                 )
                 logger.info(f"已为任务 '{task.task_name}' (ID: {task_id}) 添加调度，cron: {task.schedule}")

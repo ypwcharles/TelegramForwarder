@@ -33,7 +33,8 @@
         "grok-2-latest"
     ],
     "deepseek": [
-        "deepseek-chat"
+        "deepseek-chat",
+        "Qwen/Qwen3-Next-80B-A3B-Instruct"
     ],
     "claude": [
         "claude-3-7-sonnet-latest",
