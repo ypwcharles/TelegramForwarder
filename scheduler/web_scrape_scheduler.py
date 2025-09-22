@@ -12,6 +12,18 @@ from datetime import datetime
 from playwright.async_api import async_playwright
 
 logger = logging.getLogger(__name__)
+
+# 全局调度器实例
+_global_web_scrape_scheduler = None
+
+def get_web_scrape_scheduler():
+    """获取全局网页抓取调度器实例"""
+    return _global_web_scrape_scheduler
+
+def set_web_scrape_scheduler(scheduler):
+    """设置全局网页抓取调度器实例"""
+    global _global_web_scrape_scheduler
+    _global_web_scrape_scheduler = scheduler
 URL_TEMPLATE = "https://coinmarketcap.com/community/coins/{coin_name}/latest/"
 
 async def execute_scrape_task(task_id: int, bot_client):
@@ -27,6 +39,7 @@ async def execute_scrape_task(task_id: int, bot_client):
 
         all_new_posts = []
         posts_by_coin = {}
+        processed_unique_ids = set()  # 跟踪本次任务已处理的帖子ID，防止重复
         coin_names = [name.strip() for name in task.coin_names.split(',')]
 
         async with async_playwright() as p:
@@ -44,10 +57,30 @@ async def execute_scrape_task(task_id: int, bot_client):
                 
                 try:
                     scraped_posts = await scrape_page(page, url, time_limit_hours=24)
-                    if new_posts := [p for p in scraped_posts if p['unique_id'] not in {post.post_unique_id for post in task.processed_posts}]:
-                        logger.info(f"任务 {task.id} 在 {coin} 页面发现 {len(new_posts)} 个新帖子。")
-                        posts_by_coin[coin] = new_posts
-                        all_new_posts.extend(new_posts)
+                    
+                    # 检查是否有重复的帖子
+                    unique_ids_in_scrape = {p['unique_id'] for p in scraped_posts}
+                    if len(scraped_posts) != len(unique_ids_in_scrape):
+                        logger.warning(f"任务 {task.id} 在 {coin} 页面发现重复帖子，原始 {len(scraped_posts)} 个，去重后 {len(unique_ids_in_scrape)} 个")
+                    
+                    # 筛选真正的新帖子（数据库中没有且本次任务未处理过）
+                    db_processed_ids = {post.post_unique_id for post in task.processed_posts}
+                    coin_new_posts = []
+                    
+                    for post in scraped_posts:
+                        unique_id = post['unique_id']
+                        if unique_id not in db_processed_ids and unique_id not in processed_unique_ids:
+                            coin_new_posts.append(post)
+                            all_new_posts.append(post)
+                            processed_unique_ids.add(unique_id)
+                            logger.debug(f"任务 {task.id}: 添加新帖子 {unique_id}")
+                        elif unique_id in processed_unique_ids:
+                            logger.debug(f"任务 {task.id}: 跳过本次任务已处理的帖子 {unique_id}")
+                    
+                    if coin_new_posts:
+                        logger.info(f"任务 {task.id} 在 {coin} 页面发现 {len(coin_new_posts)} 个新帖子。")
+                        posts_by_coin[coin] = coin_new_posts
+                        
                 except Exception as e:
                     logger.error(f"抓取币种 {coin} (URL: {url}) 时出错: {e}")
                     continue
@@ -139,3 +172,39 @@ class WebScrapeScheduler:
         if self.scheduler.running:
             self.scheduler.shutdown()
             logger.info("网页抓取调度器已停止。" )
+    
+    async def reschedule_task(self, task_id):
+        """重新调度指定任务"""
+        session = get_session()
+        try:
+            task = session.query(WebScrapeConfig).filter_by(id=task_id, is_enabled=True).first()
+            if not task:
+                logger.warning(f"任务 ID {task_id} 不存在或已禁用，无法重新调度")
+                return False
+            
+            job_id = f"scrape_task_{task_id}"
+            
+            # 检查任务是否存在
+            if self.scheduler.get_job(job_id):
+                # 重新调度现有任务
+                self.scheduler.reschedule_job(
+                    job_id,
+                    trigger=CronTrigger.from_crontab(task.schedule)
+                )
+                logger.info(f"已重新调度任务 '{task.task_name}' (ID: {task_id})，新的 cron: {task.schedule}")
+            else:
+                # 任务不存在，添加新任务
+                self.scheduler.add_job(
+                    execute_scrape_task,
+                    CronTrigger.from_crontab(task.schedule),
+                    args=[task.id, self.bot_client],
+                    id=job_id,
+                    name=f"Scrape {task.task_name}",
+                    misfire_grace_time=3600,
+                    replace_existing=True
+                )
+                logger.info(f"已为任务 '{task.task_name}' (ID: {task_id}) 添加调度，cron: {task.schedule}")
+            
+            return True
+        finally:
+            session.close()

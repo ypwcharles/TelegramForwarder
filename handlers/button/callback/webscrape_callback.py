@@ -11,6 +11,7 @@ from handlers.button.webscrape_manager import (
 )
 from models.models import get_session, WebScrapeConfig
 from scheduler.web_scrape_scheduler import execute_scrape_task
+from scheduler.web_scrape_scheduler import get_web_scrape_scheduler
 from utils.common import get_bot_client
 
 logger = logging.getLogger(__name__)
@@ -119,6 +120,12 @@ async def handle_ws_set_schedule(event, task_id, cron_expression):
         task = session.query(WebScrapeConfig).get(int(task_id))
         task.schedule = cron_expression
         session.commit()
+        
+        # 重新调度任务
+        scheduler = get_web_scrape_scheduler()
+        if scheduler:
+            await scheduler.reschedule_task(int(task_id))
+        
         await event.answer(f"定时已更新为: {cron_expression}")
         await handle_ws_task_settings(event, task_id)
     finally:

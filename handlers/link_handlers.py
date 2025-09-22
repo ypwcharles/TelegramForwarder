@@ -3,6 +3,7 @@ import os
 import logging
 from utils.common import get_main_module, get_user_id
 from utils.constants import TEMP_DIR
+from utils.auto_delete import reply_and_delete
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +90,25 @@ async def handle_media_group(client, user_client, chat_id, message, event):
                         logger.error(f'下载媒体文件失败: {str(e)}')
 
             if files:
+                # 处理 caption 过长的问题
+                if caption and len(caption) > 1024:
+                    logger.warning(f'媒体组 caption 过长 ({len(caption)} 字符)，将截断到 1024 字符')
+                    # 尝试保留完整的最后一句话
+                    truncated = caption[:1024]
+                    # 找到最后一个句号、问号或感叹号
+                    last_punctuation = max(
+                        truncated.rfind('。'),
+                        truncated.rfind('？'),
+                        truncated.rfind('！'),
+                        truncated.rfind('.'),
+                        truncated.rfind('?'),
+                        truncated.rfind('!')
+                    )
+                    if last_punctuation > 512:  # 确保截断后仍有足够内容
+                        caption = truncated[:last_punctuation + 1]
+                    else:
+                        caption = truncated[:1020] + '...'
+                
                 # 发送媒体组
                 await client.send_file(
                     event.chat_id,
@@ -125,13 +145,52 @@ async def handle_single_message(client, message, event):
             if file_path:
                 logger.info(f'已下载媒体文件: {file_path}')
                 caption = message.text if message.text else ''
-                await client.send_file(
-                    event.chat_id,
-                    file_path,
-                    caption=caption,
-                    parse_mode=parse_mode,
-                    buttons=buttons
-                )
+                
+                # 处理 caption 过长的问题
+                if caption and len(caption) > 1024:
+                    logger.warning(f'Caption 过长 ({len(caption)} 字符)，将截断到 1024 字符')
+                    # 尝试保留完整的最后一句话
+                    truncated = caption[:1024]
+                    # 找到最后一个句号、问号或感叹号
+                    last_punctuation = max(
+                        truncated.rfind('。'),
+                        truncated.rfind('？'),
+                        truncated.rfind('！'),
+                        truncated.rfind('.'),
+                        truncated.rfind('?'),
+                        truncated.rfind('!')
+                    )
+                    if last_punctuation > 512:  # 确保截断后仍有足够内容
+                        caption = truncated[:last_punctuation + 1]
+                    else:
+                        caption = truncated[:1020] + '...'
+                    
+                    # 发送媒体文件
+                    await client.send_file(
+                        event.chat_id,
+                        file_path,
+                        caption=caption,
+                        parse_mode=parse_mode,
+                        buttons=buttons
+                    )
+                    
+                    # 如果有剩余文本，作为单独消息发送
+                    remaining_text = message.text[1024:] if len(message.text) > 1024 else None
+                    if remaining_text:
+                        await client.send_message(
+                            event.chat_id,
+                            f'...（剩余文本）\n{remaining_text}',
+                            parse_mode=parse_mode
+                        )
+                else:
+                    # caption 长度正常，直接发送
+                    await client.send_file(
+                        event.chat_id,
+                        file_path,
+                        caption=caption,
+                        parse_mode=parse_mode,
+                        buttons=buttons
+                    )
                 logger.info('已转发单条媒体消息')
         else:
             # 处理纯文本消息

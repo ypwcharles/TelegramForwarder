@@ -104,18 +104,45 @@ services:
     ...
 ```
 
-**3. （线上服务器）执行更新**
+**3. （本地）上传文件到服务器**
 
-将更新后的 `docker-compose-syn.yml` 文件上传到您的服务器，覆盖旧文件。然后登录服务器执行以下操作：
+使用以下命令将更新后的 `docker-compose-syn.yml` 文件上传到服务器：
 
 ```bash
+# 设置密钥权限（如果尚未设置）
+chmod 400 /Users/peiwenyang/Development/telegram-channel/TelegramForwarder/LightsailDefaultKey-ap-southeast-2.pem
+
+# 上传 docker-compose-syn.yml 文件到服务器（上传后改名为 docker-compose.yml）
+scp -i /Users/peiwenyang/Development/telegram-channel/TelegramForwarder/LightsailDefaultKey-ap-southeast-2.pem \
+  ./docker-compose-syn.yml \
+  ubuntu@47.128.228.116:~/telegram_forwarder/docker-compose.yml
+
+# 如果需要上传其他文件（如 .env），使用类似的命令
+scp -i /Users/peiwenyang/Development/telegram-channel/TelegramForwarder/LightsailDefaultKey-ap-southeast-2.pem \
+  ./.env \
+  ubuntu@47.128.228.116:~/telegram_forwarder/.env
+```
+
+**4. （线上服务器）执行更新**
+
+使用 SSH 登录到服务器并执行以下操作：
+
+```bash
+# 登录到服务器
+ssh -i /Users/peiwenyang/Development/telegram-channel/TelegramForwarder/LightsailDefaultKey-ap-southeast-2.pem \
+  ubuntu@47.128.228.116
+
+# 进入项目目录（如果没有需要先创建）
+mkdir -p ~/telegram_forwarder
+cd ~/telegram_forwarder
+
 # 0. (安全第一) 备份当前数据库！
 # 可以先 docker-compose down 停掉服务，再操作，更安全
 docker-compose down
 cp ./db/forward.db ./db/forward.db.backup-$(date +%Y%m%d-%H%M%S)
 
-# 1. 将新的部署模板应用到实际的 docker-compose 文件
-cp docker-compose-syn.yml docker-compose.yml
+# 1. 将 .env 文件复制到项目目录（如果上传了的话）
+# 如果 .env 文件直接上传到了项目目录，这步可以跳过
 
 # 2. 拉取新的镜像
 docker-compose pull
@@ -124,6 +151,6 @@ docker-compose pull
 docker-compose up -d --force-recreate
 ```
 
-**4. （线上服务器）验证和回滚**
+**5. （线上服务器）验证和回滚**
 - 使用 `docker-compose logs -f` 观察日志，确保一切正常。
 - 如果出现严重问题，您可以立即执行 `docker-compose down`，用备份的数据库文件覆盖现有文件，然后修改 `docker-compose.yml` 指向**上一个可用**的镜像版本，再 `docker-compose up -d` 即可快速回滚。

@@ -12,7 +12,7 @@ import multiprocessing
 from models.db_operations import DBOperations
 from scheduler.summary_scheduler import SummaryScheduler
 from scheduler.chat_updater import ChatUpdater
-from scheduler.web_scrape_scheduler import WebScrapeScheduler
+from scheduler.web_scrape_scheduler import WebScrapeScheduler, set_web_scrape_scheduler
 from handlers.bot_handler import send_welcome_message
 from rss.main import app as rss_app
 from utils.log_config import setup_logging
@@ -115,6 +115,7 @@ async def start_clients():
 
         # 创建并启动网页抓取调度器
         web_scrape_scheduler = WebScrapeScheduler(bot_client)
+        set_web_scrape_scheduler(web_scrape_scheduler)  # 设置全局实例
         await web_scrape_scheduler.start()
 
         # 如果启用了 RSS 服务

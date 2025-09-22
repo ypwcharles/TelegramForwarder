@@ -11,6 +11,7 @@ from models.models import PushConfig
 from telethon import Button
 from handlers.button.webscrape_manager import create_task_settings_text, create_task_settings_buttons, create_ai_settings_buttons
 from cron_validator import CronValidator
+from scheduler.web_scrape_scheduler import get_web_scrape_scheduler
 
 logger = logging.getLogger(__name__)
 
@@ -124,6 +125,12 @@ async def handle_set_webscrape_schedule(event, sender_id, chat_id, message, task
 
         task.schedule = cron_expression
         session.commit()
+        
+        # 重新调度任务
+        scheduler = get_web_scrape_scheduler()
+        if scheduler:
+            await scheduler.reschedule_task(task_id)
+        
         state_manager.clear_state(sender_id, chat_id)
         await async_delete_user_message(event.client, chat_id, event.message.id, 0)
         
