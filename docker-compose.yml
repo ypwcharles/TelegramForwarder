@@ -1,0 +1,46 @@
+services:
+  telegram-forwarder:
+    # 使用线上镜像（使用 latest 便于统一升级）
+    image: your-dockerhub-username/telegram-forwarder:latest
+    # 强制运行与构建仅使用 amd64 架构
+    platform: linux/amd64
+    build:
+      context: .
+      dockerfile: Dockerfile
+      # 提示构建器仅构建 AMD64（需要 buildx/BuildKit 支持）
+      platforms:
+        - linux/amd64
+    
+    # 您可以为在群晖上运行的容器起一个新名字
+    container_name: my-synology-forwarder
+    # 让容器使用内置的 init 进程 (tini) 来负责僵尸进程回收
+    init: true
+    
+    # 始终在容器停止时重启，除非手动停止
+    restart: unless-stopped
+    
+    # 卷挂载，将群晖上的文件夹映射到容器内部
+    # 请确保在群晖的 /docker 共享文件夹下，已创建 my-synology-forwarder 文件夹
+    # 并在其中创建 db, logs, sessions, temp, ufb/config, config, rss/data, rss/media 这些子文件夹
+    volumes:
+      - ./db:/app/db
+      - ./.env:/app/.env
+      - ./logs:/app/logs
+      - ./sessions:/app/sessions
+      - ./temp:/app/temp
+      - ./ufb/config:/app/ufb/config
+      - ./config:/app/config
+      - ./rss/data:/app/rss/data
+      - ./rss/media:/app/rss/media
+      
+    # 日志配置
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+        compress: "true"
+        
+    # 后台运行模式，不需要交互式输入
+    stdin_open: false
+    tty: false
